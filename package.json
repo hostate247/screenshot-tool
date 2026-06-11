@@ -1,7 +1,8 @@
 {
   "name": "screenshot-tool",
   "version": "1.0.0",
-  "description": "macOS screenshot tool with annotation",
+  "productName": "RedCap",
+  "description": "macOS screenshot annotation tool",
   "main": "src/main.js",
   "scripts": {
     "build": "vite build",
@@ -17,6 +18,14 @@
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "vite": "^6.0.3"
+  },
+  "build": {
+    "appId": "com.redcap.screenshot-tool",
+    "productName": "RedCap",
+    "mac": {
+      "icon": "assets/AppIcon.icns",
+      "category": "public.app-category.productivity"
+    }
   },
   "allowScripts": {
     "electron@33.4.11": true,

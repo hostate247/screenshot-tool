@@ -163,17 +163,18 @@ function scheduleScreenshot() {
 }
 
 app.whenReady().then(async () => {
-  // Hide from Dock before any window appears so it never shows there.
+  // Menu-bar-only app: hide dock icon. The app won't appear in ⌘Tab — that is
+  // expected macOS behavior for LSUIElement-style apps.
   if (process.platform === 'darwin') app.dock.hide()
 
   const allowed = await ensureScreenPermission()
   if (!allowed) return
 
   // ── Menu bar tray ──────────────────────────────────────────────────────────
+  // Not a template image — the red rectangle must render in its actual color.
+  // Electron auto-loads tray-icon@2x.png on Retina displays from the same directory.
   const iconPath = path.join(__dirname, 'assets', 'tray-icon.png')
-  const icon = nativeImage.createFromPath(iconPath)
-  icon.setTemplateImage(true)
-  tray = new Tray(icon)
+  tray = new Tray(nativeImage.createFromPath(iconPath))
   tray.setToolTip('Screenshot Tool')
 
   const menu = Menu.buildFromTemplate([
