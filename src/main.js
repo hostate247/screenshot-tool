@@ -22,8 +22,8 @@ const gotLock = app.requestSingleInstanceLock()
 if (!gotLock) app.quit()
 
 let tray = null
-let overlayWindow = null
-let overlayBounds = null
+let overlayWindows = []   // [{ window: BrowserWindow, display: Display }]
+let overlayReadyCount = 0
 let annotationWindow = null
 
 function captureRegion(x, y, w, h) {
@@ -39,40 +39,40 @@ function captureRegion(x, y, w, h) {
   }
 }
 
-function createOverlayWindow() {
-  // Use full display bounds (not workArea, which excludes the menu bar and dock).
-  // Force origin to {0,0} — the primary display always starts here on macOS.
-  const { width, height } = screen.getPrimaryDisplay().bounds
-  overlayBounds = { x: 0, y: 0, width, height }
+function createOverlayWindows() {
+  overlayWindows = []
+  overlayReadyCount = 0
 
-  overlayWindow = new BrowserWindow({
-    x: 0,
-    y: 0,
-    width,
-    height,
-    show: false,
-    frame: false,
-    transparent: true,
-    backgroundColor: '#00000000',
-    alwaysOnTop: true,
-    skipTaskbar: true,
-    hasShadow: false,
-    resizable: false,
-    movable: false,
-    focusable: true,
-    webPreferences: {
-      preload: path.join(__dirname, 'preload-overlay.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
-    },
-  })
+  for (const display of screen.getAllDisplays()) {
+    const { x, y, width, height } = display.bounds
 
-  overlayWindow.setBounds(overlayBounds)
-  overlayWindow.setAlwaysOnTop(true, 'screen-saver')
-  overlayWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
-  overlayWindow.loadFile(path.join(__dirname, '../dist/overlay.html'))
+    const win = new BrowserWindow({
+      x, y, width, height,
+      show: false,
+      frame: false,
+      transparent: true,
+      backgroundColor: '#00000000',
+      alwaysOnTop: true,
+      skipTaskbar: true,
+      hasShadow: false,
+      resizable: false,
+      movable: false,
+      focusable: true,
+      webPreferences: {
+        preload: path.join(__dirname, 'preload-overlay.js'),
+        contextIsolation: true,
+        nodeIntegration: false,
+      },
+    })
 
-  overlayWindow.on('closed', () => { overlayWindow = null; overlayBounds = null })
+    win.setBounds({ x, y, width, height })
+    win.setAlwaysOnTop(true, 'screen-saver')
+    win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
+    win.loadFile(path.join(__dirname, '../dist/overlay.html'))
+    win.on('closed', () => { overlayWindows = overlayWindows.filter(o => o.window !== win) })
+
+    overlayWindows.push({ window: win, display })
+  }
 }
 
 function createAnnotationWindow(croppedDataUrl) {
@@ -144,12 +144,12 @@ async function ensureScreenPermission() {
 }
 
 function triggerScreenshot() {
-  if (overlayWindow) {
-    overlayWindow.close()
+  if (overlayWindows.length > 0) {
+    for (const { window } of [...overlayWindows]) window.close()
     return
   }
   if (annotationWindow) annotationWindow.close()
-  createOverlayWindow()
+  createOverlayWindows()
 }
 
 // Close the tray menu (if open) then wait for its dismiss animation before
@@ -162,36 +162,6 @@ function scheduleScreenshot() {
   setTimeout(triggerScreenshot, 150)
 }
 
-// ── Settings (persisted to userData) ─────────────────────────────────────────
-
-function getSettings() {
-  try {
-    return JSON.parse(fs.readFileSync(
-      path.join(app.getPath('userData'), 'settings.json'), 'utf8'
-    ))
-  } catch {
-    return {}
-  }
-}
-
-function saveSettings(data) {
-  const p = path.join(app.getPath('userData'), 'settings.json')
-  fs.mkdirSync(path.dirname(p), { recursive: true })
-  fs.writeFileSync(p, JSON.stringify(data, null, 2))
-}
-
-// ── Login-at-startup helpers ──────────────────────────────────────────────────
-
-function getLoginItemEnabled() {
-  return app.getLoginItemSettings().openAtLogin
-}
-
-function setLoginItem(enable) {
-  app.setLoginItemSettings({ openAtLogin: enable, openAsHidden: true })
-}
-
-// ── Tray menu (rebuilt on every state change to keep checkmark accurate) ──────
-
 function buildTrayMenu() {
   return Menu.buildFromTemplate([
     {
@@ -200,15 +170,7 @@ function buildTrayMenu() {
       click: scheduleScreenshot,
     },
     { type: 'separator' },
-    {
-      label: 'Launch at Login',
-      type: 'checkbox',
-      checked: getLoginItemEnabled(),
-      click: (item) => {
-        setLoginItem(item.checked)
-        tray.setContextMenu(buildTrayMenu())
-      },
-    },
+    { label: 'Launch at Login (requires signed app)', enabled: false },
     { type: 'separator' },
     { label: 'Quit', click: () => app.quit() },
   ])
@@ -221,13 +183,6 @@ app.whenReady().then(async () => {
 
   const allowed = await ensureScreenPermission()
   if (!allowed) return
-
-  // ── Auto-enable login item on first launch ────────────────────────────────
-  const settings = getSettings()
-  if (!settings.loginItemConfigured) {
-    try { setLoginItem(true) } catch (e) { console.error('setLoginItem failed:', e) }
-    saveSettings({ ...settings, loginItemConfigured: true })
-  }
 
   // ── Menu bar tray ──────────────────────────────────────────────────────────
   // Not a template image — the red rectangle must render in its actual color.
@@ -253,33 +208,57 @@ app.on('window-all-closed', () => {
 // ── IPC ──────────────────────────────────────────────────────────────────────
 
 ipcMain.on('overlay-ready', () => {
-  if (overlayWindow && overlayBounds) {
-    overlayWindow.show()
-    // setSimpleFullScreen must be called after show() to cover the menu bar area on macOS.
-    // setBounds alone is clamped to y≥33 (menu bar height) by the window manager.
-    overlayWindow.setSimpleFullScreen(true)
-    overlayWindow.focus()
+  overlayReadyCount++
+  if (overlayReadyCount < overlayWindows.length) return
+
+  const primaryId = screen.getPrimaryDisplay().id
+
+  // Show all windows and reapply bounds (macOS may reposition on show()).
+  for (const { window: win, display } of overlayWindows) {
+    win.show()
+    win.setBounds(display.bounds)
+  }
+
+  // setSimpleFullScreen only on the primary display — that's the only one where macOS
+  // clamps y≥33 (menu bar height). Secondary displays sit below/beside and don't need it.
+  // Calling it on multiple windows in sequence stalls the window manager.
+  const primaryOverlay = overlayWindows.find(o => o.display.id === primaryId) ?? overlayWindows[0]
+  if (primaryOverlay) {
+    primaryOverlay.window.setSimpleFullScreen(true)
+    primaryOverlay.window.focus()
   }
 })
 
 ipcMain.on('cancel-selection', () => {
-  if (overlayWindow) overlayWindow.close()
+  for (const { window } of [...overlayWindows]) window.close()
 })
 
-ipcMain.on('selection-complete', (_, { x, y, w, h }) => {
-  if (!overlayWindow || !overlayBounds) return
-  const screenX = overlayBounds.x + Math.round(x)
-  const screenY = overlayBounds.y + Math.round(y)
+ipcMain.on('selection-complete', (event, { x, y, w, h }) => {
+  const overlay = overlayWindows.find(o => o.window.webContents === event.sender)
+  if (!overlay) return
+
+  const { x: dx, y: dy } = overlay.display.bounds
+  const screenX = dx + Math.round(x)
+  const screenY = dy + Math.round(y)
   const selW = Math.round(w)
   const selH = Math.round(h)
 
-  overlayWindow.once('closed', () => {
-    setTimeout(() => {
-      const dataUrl = captureRegion(screenX, screenY, selW, selH)
-      if (dataUrl) createAnnotationWindow(dataUrl)
-    }, 80)
-  })
-  overlayWindow.close()
+  // Close all overlay windows and capture only after every one has closed.
+  const toClose = [...overlayWindows]
+  let closedCount = 0
+  const onOneClosed = () => {
+    if (++closedCount === toClose.length) {
+      setTimeout(() => {
+        const dataUrl = captureRegion(screenX, screenY, selW, selH)
+        if (dataUrl) createAnnotationWindow(dataUrl)
+      }, 80)
+    }
+  }
+
+  for (const { window: win } of toClose) {
+    win.once('closed', onOneClosed)
+    win.close()
+  }
 })
 
 ipcMain.handle('copy-to-clipboard', (_, dataUrl) => {
