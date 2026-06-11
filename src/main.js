@@ -10,6 +10,8 @@ const {
   clipboard,
   desktopCapturer,
   systemPreferences,
+  Tray,
+  Menu,
 } = require('electron')
 const path = require('path')
 const { execSync } = require('child_process')
@@ -19,6 +21,7 @@ const os = require('os')
 const gotLock = app.requestSingleInstanceLock()
 if (!gotLock) app.quit()
 
+let tray = null
 let overlayWindow = null
 let overlayBounds = null
 let annotationWindow = null
@@ -140,20 +143,54 @@ async function ensureScreenPermission() {
   return false
 }
 
+function triggerScreenshot() {
+  if (overlayWindow) {
+    overlayWindow.close()
+    return
+  }
+  if (annotationWindow) annotationWindow.close()
+  createOverlayWindow()
+}
+
+// Close the tray menu (if open) then wait for its dismiss animation before
+// showing the overlay. macOS suspends globalShortcut handlers while a native
+// menu is open, so the menu item's click handler — fired via its accelerator —
+// is the only path that runs. tray.closeContextMenu() + setTimeout ensures the
+// NSMenu is fully gone before we create the overlay window.
+function scheduleScreenshot() {
+  if (tray) tray.closeContextMenu()
+  setTimeout(triggerScreenshot, 150)
+}
+
 app.whenReady().then(async () => {
+  // Hide from Dock before any window appears so it never shows there.
+  if (process.platform === 'darwin') app.dock.hide()
+
   const allowed = await ensureScreenPermission()
   if (!allowed) return
 
-  if (process.platform === 'darwin') app.dock.hide()
+  // ── Menu bar tray ──────────────────────────────────────────────────────────
+  const iconPath = path.join(__dirname, 'assets', 'tray-icon.png')
+  const icon = nativeImage.createFromPath(iconPath)
+  icon.setTemplateImage(true)
+  tray = new Tray(icon)
+  tray.setToolTip('Screenshot Tool')
 
-  const ok = globalShortcut.register('Alt+Command+B', () => {
-    if (overlayWindow) {
-      overlayWindow.close()
-      return
-    }
-    createOverlayWindow()
-  })
+  const menu = Menu.buildFromTemplate([
+    {
+      label: 'Take Screenshot',
+      accelerator: 'Alt+Command+B',
+      click: scheduleScreenshot,
+    },
+    { type: 'separator' },
+    { label: 'Quit', click: () => app.quit() },
+  ])
+  tray.setContextMenu(menu)
 
+  // ── Global shortcut ────────────────────────────────────────────────────────
+  // Fires when no menu is open. Use scheduleScreenshot so any partially-closed
+  // menu doesn't race with the overlay appearing.
+  const ok = globalShortcut.register('Alt+Command+B', scheduleScreenshot)
   if (!ok) console.error('Failed to register global shortcut Alt+Command+B')
 })
 
