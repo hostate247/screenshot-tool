@@ -22,57 +22,64 @@ const gotLock = app.requestSingleInstanceLock()
 if (!gotLock) app.quit()
 
 let tray = null
-let overlayWindows = []   // [{ window: BrowserWindow, display: Display }]
-let overlayReadyCount = 0
+let overlayWindow = null
+let overlayBounds = null  // combined bounding rect of all displays
 let annotationWindow = null
+
+const dbg = (...args) => fs.appendFileSync(
+  path.join(os.homedir(), 'Desktop', 'redcap-debug.log'),
+  `${new Date().toISOString()} ${args.join(' ')}\n`
+)
 
 function captureRegion(x, y, w, h) {
   const tmpPath = path.join(os.tmpdir(), `sc-${Date.now()}.png`)
+  const cmd = `screencapture -x -t png -R ${x},${y},${w},${h} "${tmpPath}"`
+  dbg(`captureRegion cmd: ${cmd}`)
   try {
-    execSync(`screencapture -x -t png -R ${x},${y},${w},${h} "${tmpPath}"`)
+    execSync(cmd)
     const data = fs.readFileSync(tmpPath)
     fs.unlinkSync(tmpPath)
     return `data:image/png;base64,${data.toString('base64')}`
   } catch (err) {
-    console.error('screencapture failed:', err.message)
+    dbg(`captureRegion ERROR: ${err.message}`)
     return null
   }
 }
 
-function createOverlayWindows() {
-  overlayWindows = []
-  overlayReadyCount = 0
+function createOverlayWindow() {
+  const displays = screen.getAllDisplays()
 
-  for (const display of screen.getAllDisplays()) {
-    const { x, y, width, height } = display.bounds
+  // Compute a single rect that covers every display.
+  const minX = Math.min(...displays.map(d => d.bounds.x))
+  const minY = Math.min(...displays.map(d => d.bounds.y))
+  const maxX = Math.max(...displays.map(d => d.bounds.x + d.bounds.width))
+  const maxY = Math.max(...displays.map(d => d.bounds.y + d.bounds.height))
+  overlayBounds = { x: minX, y: minY, width: maxX - minX, height: maxY - minY }
 
-    const win = new BrowserWindow({
-      x, y, width, height,
-      show: false,
-      frame: false,
-      transparent: true,
-      backgroundColor: '#00000000',
-      alwaysOnTop: true,
-      skipTaskbar: true,
-      hasShadow: false,
-      resizable: false,
-      movable: false,
-      focusable: true,
-      webPreferences: {
-        preload: path.join(__dirname, 'preload-overlay.js'),
-        contextIsolation: true,
-        nodeIntegration: false,
-      },
-    })
+  overlayWindow = new BrowserWindow({
+    ...overlayBounds,
+    show: false,
+    frame: false,
+    transparent: true,
+    backgroundColor: '#00000000',
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    hasShadow: false,
+    resizable: false,
+    movable: false,
+    focusable: true,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload-overlay.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  })
 
-    win.setBounds({ x, y, width, height })
-    win.setAlwaysOnTop(true, 'screen-saver')
-    win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
-    win.loadFile(path.join(__dirname, '../dist/overlay.html'))
-    win.on('closed', () => { overlayWindows = overlayWindows.filter(o => o.window !== win) })
-
-    overlayWindows.push({ window: win, display })
-  }
+  overlayWindow.setBounds(overlayBounds)
+  overlayWindow.setAlwaysOnTop(true, 'screen-saver')
+  overlayWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
+  overlayWindow.loadFile(path.join(__dirname, '../dist/overlay.html'))
+  overlayWindow.on('closed', () => { overlayWindow = null; overlayBounds = null })
 }
 
 function createAnnotationWindow(croppedDataUrl) {
@@ -144,12 +151,9 @@ async function ensureScreenPermission() {
 }
 
 function triggerScreenshot() {
-  if (overlayWindows.length > 0) {
-    for (const { window } of [...overlayWindows]) window.close()
-    return
-  }
+  if (overlayWindow) { overlayWindow.close(); return }
   if (annotationWindow) annotationWindow.close()
-  createOverlayWindows()
+  createOverlayWindow()
 }
 
 // Close the tray menu (if open) then wait for its dismiss animation before
@@ -208,57 +212,42 @@ app.on('window-all-closed', () => {
 // ── IPC ──────────────────────────────────────────────────────────────────────
 
 ipcMain.on('overlay-ready', () => {
-  overlayReadyCount++
-  if (overlayReadyCount < overlayWindows.length) return
-
-  const primaryId = screen.getPrimaryDisplay().id
-
-  // Show all windows and reapply bounds (macOS may reposition on show()).
-  for (const { window: win, display } of overlayWindows) {
-    win.show()
-    win.setBounds(display.bounds)
-  }
-
-  // setSimpleFullScreen only on the primary display — that's the only one where macOS
-  // clamps y≥33 (menu bar height). Secondary displays sit below/beside and don't need it.
-  // Calling it on multiple windows in sequence stalls the window manager.
-  const primaryOverlay = overlayWindows.find(o => o.display.id === primaryId) ?? overlayWindows[0]
-  if (primaryOverlay) {
-    primaryOverlay.window.setSimpleFullScreen(true)
-    primaryOverlay.window.focus()
-  }
+  if (!overlayWindow || !overlayBounds) return
+  overlayWindow.show()
+  overlayWindow.setBounds(overlayBounds)
+  // Re-assert after show() — macOS can reset the window level when a window becomes visible.
+  overlayWindow.setAlwaysOnTop(true, 'screen-saver')
+  overlayWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
+  overlayWindow.focus()
 })
 
 ipcMain.on('cancel-selection', () => {
-  for (const { window } of [...overlayWindows]) window.close()
+  if (overlayWindow) overlayWindow.close()
 })
 
-ipcMain.on('selection-complete', (event, { x, y, w, h }) => {
-  const overlay = overlayWindows.find(o => o.window.webContents === event.sender)
-  if (!overlay) return
-
-  const { x: dx, y: dy } = overlay.display.bounds
-  const screenX = dx + Math.round(x)
-  const screenY = dy + Math.round(y)
+ipcMain.on('selection-complete', (_, { x, y, w, h }) => {
+  if (!overlayWindow || !overlayBounds) return
+  const screenX = overlayBounds.x + Math.round(x)
+  const screenY = overlayBounds.y + Math.round(y)
   const selW = Math.round(w)
   const selH = Math.round(h)
-
-  // Close all overlay windows and capture only after every one has closed.
-  const toClose = [...overlayWindows]
-  let closedCount = 0
-  const onOneClosed = () => {
-    if (++closedCount === toClose.length) {
-      setTimeout(() => {
-        const dataUrl = captureRegion(screenX, screenY, selW, selH)
-        if (dataUrl) createAnnotationWindow(dataUrl)
-      }, 80)
-    }
+  const actualBounds = overlayWindow.getBounds()
+  dbg(`selection-complete: renderer x=${x} y=${y} w=${w} h=${h}`)
+  dbg(`  overlayBounds=${JSON.stringify(overlayBounds)}`)
+  dbg(`  actualWindowBounds=${JSON.stringify(actualBounds)}`)
+  dbg(`  => screenX=${screenX} screenY=${screenY} w=${selW} h=${selH}`)
+  dbg(`  displays=${JSON.stringify(screen.getAllDisplays().map(d => ({ id: d.id, bounds: d.bounds })))}`)
+  if (actualBounds.y !== overlayBounds.y) {
+    dbg(`  WARNING: window y clamped from ${overlayBounds.y} to ${actualBounds.y} — coordinates will be off by ${actualBounds.y - overlayBounds.y}px`)
   }
 
-  for (const { window: win } of toClose) {
-    win.once('closed', onOneClosed)
-    win.close()
-  }
+  overlayWindow.once('closed', () => {
+    setTimeout(() => {
+      const dataUrl = captureRegion(screenX, screenY, selW, selH)
+      if (dataUrl) createAnnotationWindow(dataUrl)
+    }, 80)
+  })
+  overlayWindow.close()
 })
 
 ipcMain.handle('copy-to-clipboard', (_, dataUrl) => {
