@@ -162,6 +162,58 @@ function scheduleScreenshot() {
   setTimeout(triggerScreenshot, 150)
 }
 
+// ── Settings (persisted to userData) ─────────────────────────────────────────
+
+function getSettings() {
+  try {
+    return JSON.parse(fs.readFileSync(
+      path.join(app.getPath('userData'), 'settings.json'), 'utf8'
+    ))
+  } catch {
+    return {}
+  }
+}
+
+function saveSettings(data) {
+  const p = path.join(app.getPath('userData'), 'settings.json')
+  fs.mkdirSync(path.dirname(p), { recursive: true })
+  fs.writeFileSync(p, JSON.stringify(data, null, 2))
+}
+
+// ── Login-at-startup helpers ──────────────────────────────────────────────────
+
+function getLoginItemEnabled() {
+  return app.getLoginItemSettings().openAtLogin
+}
+
+function setLoginItem(enable) {
+  app.setLoginItemSettings({ openAtLogin: enable, openAsHidden: true })
+}
+
+// ── Tray menu (rebuilt on every state change to keep checkmark accurate) ──────
+
+function buildTrayMenu() {
+  return Menu.buildFromTemplate([
+    {
+      label: 'Take Screenshot',
+      accelerator: 'Alt+Command+B',
+      click: scheduleScreenshot,
+    },
+    { type: 'separator' },
+    {
+      label: 'Launch at Login',
+      type: 'checkbox',
+      checked: getLoginItemEnabled(),
+      click: (item) => {
+        setLoginItem(item.checked)
+        tray.setContextMenu(buildTrayMenu())
+      },
+    },
+    { type: 'separator' },
+    { label: 'Quit', click: () => app.quit() },
+  ])
+}
+
 app.whenReady().then(async () => {
   // Menu-bar-only app: hide dock icon. The app won't appear in ⌘Tab — that is
   // expected macOS behavior for LSUIElement-style apps.
@@ -170,23 +222,20 @@ app.whenReady().then(async () => {
   const allowed = await ensureScreenPermission()
   if (!allowed) return
 
+  // ── Auto-enable login item on first launch ────────────────────────────────
+  const settings = getSettings()
+  if (!settings.loginItemConfigured) {
+    try { setLoginItem(true) } catch (e) { console.error('setLoginItem failed:', e) }
+    saveSettings({ ...settings, loginItemConfigured: true })
+  }
+
   // ── Menu bar tray ──────────────────────────────────────────────────────────
   // Not a template image — the red rectangle must render in its actual color.
   // Electron auto-loads tray-icon@2x.png on Retina displays from the same directory.
   const iconPath = path.join(__dirname, 'assets', 'tray-icon.png')
   tray = new Tray(nativeImage.createFromPath(iconPath))
-  tray.setToolTip('Screenshot Tool')
-
-  const menu = Menu.buildFromTemplate([
-    {
-      label: 'Take Screenshot',
-      accelerator: 'Alt+Command+B',
-      click: scheduleScreenshot,
-    },
-    { type: 'separator' },
-    { label: 'Quit', click: () => app.quit() },
-  ])
-  tray.setContextMenu(menu)
+  tray.setToolTip('RedCap')
+  tray.setContextMenu(buildTrayMenu())
 
   // ── Global shortcut ────────────────────────────────────────────────────────
   // Fires when no menu is open. Use scheduleScreenshot so any partially-closed
