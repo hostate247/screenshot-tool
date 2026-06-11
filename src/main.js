@@ -20,12 +20,13 @@ const gotLock = app.requestSingleInstanceLock()
 if (!gotLock) app.quit()
 
 let overlayWindow = null
+let overlayBounds = null
 let annotationWindow = null
 
-function captureScreen() {
+function captureRegion(x, y, w, h) {
   const tmpPath = path.join(os.tmpdir(), `sc-${Date.now()}.png`)
   try {
-    execSync(`screencapture -x -t png "${tmpPath}"`)
+    execSync(`screencapture -x -t png -R ${x},${y},${w},${h} "${tmpPath}"`)
     const data = fs.readFileSync(tmpPath)
     fs.unlinkSync(tmpPath)
     return `data:image/png;base64,${data.toString('base64')}`
@@ -35,20 +36,21 @@ function captureScreen() {
   }
 }
 
-function createOverlayWindow(screenshotDataUrl) {
-  // Use the display the cursor is currently on, not necessarily the primary
-  const cursorPos = screen.getCursorScreenPoint()
-  const activeDisplay = screen.getDisplayNearestPoint(cursorPos)
-  const { x, y, width, height } = activeDisplay.bounds
+function createOverlayWindow() {
+  // Use full display bounds (not workArea, which excludes the menu bar and dock).
+  // Force origin to {0,0} — the primary display always starts here on macOS.
+  const { width, height } = screen.getPrimaryDisplay().bounds
+  overlayBounds = { x: 0, y: 0, width, height }
 
   overlayWindow = new BrowserWindow({
-    x,
-    y,
+    x: 0,
+    y: 0,
     width,
     height,
     show: false,
     frame: false,
     transparent: true,
+    backgroundColor: '#00000000',
     alwaysOnTop: true,
     skipTaskbar: true,
     hasShadow: false,
@@ -62,20 +64,12 @@ function createOverlayWindow(screenshotDataUrl) {
     },
   })
 
-  // macOS cascades new windows away from (0,0) — override immediately and
-  // again after show so the overlay always covers the full display exactly.
-  overlayWindow.setBounds({ x, y, width, height })
+  overlayWindow.setBounds(overlayBounds)
   overlayWindow.setAlwaysOnTop(true, 'screen-saver')
   overlayWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
   overlayWindow.loadFile(path.join(__dirname, '../dist/overlay.html'))
 
-  overlayWindow.webContents.once('did-finish-load', () => {
-    // Send display dimensions alongside the screenshot so the renderer
-    // can size the canvas correctly even while the window is hidden
-    overlayWindow.webContents.send('screenshot-data', { dataUrl: screenshotDataUrl, width, height })
-  })
-
-  overlayWindow.on('closed', () => { overlayWindow = null })
+  overlayWindow.on('closed', () => { overlayWindow = null; overlayBounds = null })
 }
 
 function createAnnotationWindow(croppedDataUrl) {
@@ -84,7 +78,6 @@ function createAnnotationWindow(croppedDataUrl) {
     return
   }
 
-  // Size the window sensibly around the image
   const img = nativeImage.createFromDataURL(croppedDataUrl)
   const { width: iw, height: ih } = img.getSize()
   const toolbar = 52
@@ -124,14 +117,12 @@ async function ensureScreenPermission() {
   if (status === 'granted') return true
 
   if (status === 'not-determined') {
-    // Calling getSources triggers the macOS permission dialog
     try {
       await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 1, height: 1 } })
     } catch {}
     if (systemPreferences.getMediaAccessStatus('screen') === 'granted') return true
   }
 
-  // Denied or user dismissed — explain and offer to open Settings
   const { response } = await dialog.showMessageBox({
     type: 'warning',
     buttons: ['Open System Settings', 'Quit'],
@@ -150,7 +141,6 @@ async function ensureScreenPermission() {
 }
 
 app.whenReady().then(async () => {
-  // Check permission before hiding dock so dialogs are visible
   const allowed = await ensureScreenPermission()
   if (!allowed) return
 
@@ -161,8 +151,7 @@ app.whenReady().then(async () => {
       overlayWindow.close()
       return
     }
-    const dataUrl = captureScreen()
-    if (dataUrl) createOverlayWindow(dataUrl)
+    createOverlayWindow()
   })
 
   if (!ok) console.error('Failed to register global shortcut Alt+Command+B')
@@ -171,17 +160,16 @@ app.whenReady().then(async () => {
 app.on('will-quit', () => globalShortcut.unregisterAll())
 
 app.on('window-all-closed', () => {
-  // Stay alive on macOS — app lives in background, accessible via hotkey
   if (process.platform !== 'darwin') app.quit()
 })
 
 // ── IPC ──────────────────────────────────────────────────────────────────────
 
 ipcMain.on('overlay-ready', () => {
-  if (overlayWindow) {
+  if (overlayWindow && overlayBounds) {
     overlayWindow.show()
-    // setSimpleFullScreen covers the full screen including the menu bar on macOS
-    // without entering a new Space (unlike setFullScreen)
+    // setSimpleFullScreen must be called after show() to cover the menu bar area on macOS.
+    // setBounds alone is clamped to y≥33 (menu bar height) by the window manager.
     overlayWindow.setSimpleFullScreen(true)
     overlayWindow.focus()
   }
@@ -191,9 +179,20 @@ ipcMain.on('cancel-selection', () => {
   if (overlayWindow) overlayWindow.close()
 })
 
-ipcMain.on('selection-complete', (_, croppedDataUrl) => {
-  if (overlayWindow) overlayWindow.close()
-  createAnnotationWindow(croppedDataUrl)
+ipcMain.on('selection-complete', (_, { x, y, w, h }) => {
+  if (!overlayWindow || !overlayBounds) return
+  const screenX = overlayBounds.x + Math.round(x)
+  const screenY = overlayBounds.y + Math.round(y)
+  const selW = Math.round(w)
+  const selH = Math.round(h)
+
+  overlayWindow.once('closed', () => {
+    setTimeout(() => {
+      const dataUrl = captureRegion(screenX, screenY, selW, selH)
+      if (dataUrl) createAnnotationWindow(dataUrl)
+    }, 80)
+  })
+  overlayWindow.close()
 })
 
 ipcMain.handle('copy-to-clipboard', (_, dataUrl) => {

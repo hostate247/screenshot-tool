@@ -1,88 +1,64 @@
-import React, { useEffect, useRef, useState, useCallback } from 'react'
+import React, { useEffect, useRef, useCallback, useState } from 'react'
 
 export default function OverlayApp() {
   const canvasRef = useRef(null)
-  const imgRef = useRef(null)
+  const dprRef = useRef(1)
   const dragging = useRef(false)
   const startPos = useRef(null)
-  const [selection, setSelection] = useState(null)
+  const [sel, setSel] = useState(null)
 
-  // ── Canvas drawing ──────────────────────────────────────────────────────
-
-  const redraw = useCallback((sel) => {
+  const draw = useCallback((selection) => {
     const canvas = canvasRef.current
-    const img = imgRef.current
-    if (!canvas || !img) return
-
+    if (!canvas) return
     const ctx = canvas.getContext('2d')
-    const W = canvas.width
-    const H = canvas.height
+    const W = canvas.width / dprRef.current
+    const H = canvas.height / dprRef.current
 
-    // 1. Screenshot background
-    ctx.drawImage(img, 0, 0, W, H)
+    ctx.clearRect(0, 0, W, H)
 
-    // 2. Dim overlay
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.45)'
-    ctx.fillRect(0, 0, W, H)
+    if (selection && selection.w > 0 && selection.h > 0) {
+      const { x, y, w, h } = selection
 
-    if (sel && sel.w > 0 && sel.h > 0) {
-      const { x, y, w, h } = sel
+      // Dim everything outside the selection
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.4)'
+      ctx.fillRect(0, 0, W, y)                  // top
+      ctx.fillRect(0, y, x, h)                  // left
+      ctx.fillRect(x + w, y, W - x - w, h)      // right
+      ctx.fillRect(0, y + h, W, H - y - h)      // bottom
 
-      // 3. Reveal selection by redrawing screenshot region
-      const sx = x * (img.naturalWidth / W)
-      const sy = y * (img.naturalHeight / H)
-      const sw = w * (img.naturalWidth / W)
-      const sh = h * (img.naturalHeight / H)
-      ctx.drawImage(img, sx, sy, sw, sh, x, y, w, h)
-
-      // 4. Selection border
+      // Selection border
       ctx.strokeStyle = 'rgba(255, 255, 255, 0.9)'
       ctx.lineWidth = 1.5
       ctx.setLineDash([])
       ctx.strokeRect(x, y, w, h)
 
-      // 5. Size label
-      const labelText = `${Math.round(w * (img.naturalWidth / W))} × ${Math.round(h * (img.naturalHeight / H))}`
-      const labelX = x + 4
-      const labelY = y > 20 ? y - 6 : y + h + 14
+      // Size label
+      const label = `${Math.round(w)} × ${Math.round(h)}`
       ctx.font = '11px -apple-system, BlinkMacSystemFont, sans-serif'
-      ctx.fillStyle = 'rgba(255,255,255,0.85)'
-      ctx.fillText(labelText, labelX, labelY)
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.85)'
+      const labelY = y > 20 ? y - 6 : y + h + 14
+      ctx.fillText(label, x + 4, labelY)
     }
   }, [])
 
-  // ── Bootstrap ────────────────────────────────────────────────────────────
-
   useEffect(() => {
-    // Canvas dimensions come from main process (display bounds), not window.innerWidth,
-    // because the window is hidden at this point and layout may not have happened yet.
-    window.electronAPI.onScreenshotData(({ dataUrl, width, height }) => {
-      const canvas = canvasRef.current
-      canvas.width = width
-      canvas.height = height
+    const canvas = canvasRef.current
+    const dpr = window.devicePixelRatio || 1
+    dprRef.current = dpr
+    canvas.width = window.innerWidth * dpr
+    canvas.height = window.innerHeight * dpr
+    canvas.getContext('2d').scale(dpr, dpr)
 
-      const img = new Image()
-      img.onload = () => {
-        imgRef.current = img
-        redraw(null)
-        window.electronAPI.overlayReady()
-      }
-      img.src = dataUrl
-    })
+    window.electronAPI.overlayReady()
 
     const onKey = (e) => {
       if (e.key === 'Escape') window.electronAPI.cancelSelection()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [redraw])
+  }, [])
 
-  // Redraw when selection changes
-  useEffect(() => {
-    redraw(selection)
-  }, [selection, redraw])
-
-  // ── Mouse events ─────────────────────────────────────────────────────────
+  useEffect(() => { draw(sel) }, [sel, draw])
 
   const getPos = (e) => ({ x: e.clientX, y: e.clientY })
 
@@ -90,13 +66,13 @@ export default function OverlayApp() {
     if (e.button !== 0) return
     dragging.current = true
     startPos.current = getPos(e)
-    setSelection(null)
+    setSel(null)
   }
 
   const onMouseMove = (e) => {
     if (!dragging.current || !startPos.current) return
     const cur = getPos(e)
-    setSelection({
+    setSel({
       x: Math.min(startPos.current.x, cur.x),
       y: Math.min(startPos.current.y, cur.y),
       w: Math.abs(cur.x - startPos.current.x),
@@ -107,34 +83,15 @@ export default function OverlayApp() {
   const onMouseUp = (e) => {
     if (!dragging.current) return
     dragging.current = false
-
     const cur = getPos(e)
     const x = Math.min(startPos.current.x, cur.x)
     const y = Math.min(startPos.current.y, cur.y)
     const w = Math.abs(cur.x - startPos.current.x)
     const h = Math.abs(cur.y - startPos.current.y)
 
-    if (w < 4 || h < 4) {
-      setSelection(null)
-      return
-    }
+    if (w < 4 || h < 4) { setSel(null); return }
 
-    // Crop the screenshot at native resolution
-    const img = imgRef.current
-    const canvas = canvasRef.current
-    const scaleX = img.naturalWidth / canvas.width
-    const scaleY = img.naturalHeight / canvas.height
-
-    const crop = document.createElement('canvas')
-    crop.width = Math.round(w * scaleX)
-    crop.height = Math.round(h * scaleY)
-    crop.getContext('2d').drawImage(
-      img,
-      x * scaleX, y * scaleY, w * scaleX, h * scaleY,
-      0, 0, crop.width, crop.height,
-    )
-
-    window.electronAPI.selectionComplete(crop.toDataURL('image/png'))
+    window.electronAPI.selectionComplete({ x, y, w, h })
   }
 
   return (
