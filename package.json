@@ -7,13 +7,14 @@
   "scripts": {
     "build": "vite build",
     "start": "electron .",
-    "dev": "npm run build && electron ."
+    "dev": "npm run build && electron .",
+    "dist": "npm run build && electron-builder --mac --dir"
   },
-  "dependencies": {
-    "electron": "^33.3.1"
-  },
+  "dependencies": {},
   "devDependencies": {
     "@vitejs/plugin-react": "^4.3.4",
+    "electron": "^33.3.1",
+    "electron-builder": "^25.1.8",
     "playwright-core": "^1.60.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
@@ -22,9 +23,25 @@
   "build": {
     "appId": "com.redcap.screenshot-tool",
     "productName": "RedCap",
+    "asar": true,
+    "files": [
+      "src/main.js",
+      "src/preload-overlay.js",
+      "src/preload-annotation.js",
+      "src/assets/**",
+      "dist/overlay.html",
+      "dist/annotation.html",
+      "dist/assets/**"
+    ],
+    "directories": {
+      "output": "dist/release",
+      "buildResources": "assets"
+    },
     "mac": {
       "icon": "assets/AppIcon.icns",
-      "category": "public.app-category.productivity"
+      "category": "public.app-category.productivity",
+      "target": [{ "target": "dir", "arch": ["arm64"] }],
+      "identity": null
     }
   },
   "allowScripts": {
