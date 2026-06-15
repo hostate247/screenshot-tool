@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Required for all Mac App Store apps -->
+    <key>com.apple.security.app-sandbox</key>
+    <true/>
+    <!-- Required for Electron's V8 JIT compiler -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <!-- Required for Electron's memory model -->
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+    <!-- Required so Electron can load its own frameworks -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+    <!-- Required for Electron's DYLD usage -->
+    <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+    <true/>
+</dict>
+</plist>

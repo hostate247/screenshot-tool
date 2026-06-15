@@ -278,17 +278,22 @@ ipcMain.on('selection-complete', (event, { x, y, w, h }) => {
   const senderWin = BrowserWindow.fromWebContents(event.sender)
   if (!senderWin || senderWin.isDestroyed()) return
 
-  // Use stored display.bounds (not win.getBounds()) so macOS window-position
-  // clamping doesn't corrupt the screenshot coordinates.
+  // Use win.getBounds() — clientX/Y in the renderer are relative to where the window
+  // actually is, which may differ from display.bounds if macOS clamped the position
+  // (e.g. 30px down for the menu bar on the primary display).
   const entry = overlayWindows.find(o => o.win === senderWin)
-  const originBounds = entry ? entry.display.bounds : senderWin.getBounds()
-  const screenX = originBounds.x + Math.round(x)
-  const screenY = originBounds.y + Math.round(y)
+  const winBounds = senderWin.getBounds()
+  const screenX = winBounds.x + Math.round(x)
+  const screenY = winBounds.y + Math.round(y)
   const selW = Math.round(w)
   const selH = Math.round(h)
 
+  const displayBounds = entry ? entry.display.bounds : null
   dbg(`selection-complete: renderer x=${x} y=${y} w=${w} h=${h}`)
-  dbg(`  originBounds (display)=${JSON.stringify(originBounds)} win.getBounds()=${JSON.stringify(senderWin.getBounds())}`)
+  dbg(`  win.getBounds()=${JSON.stringify(winBounds)} display.bounds=${JSON.stringify(displayBounds)}`)
+  if (displayBounds && (winBounds.x !== displayBounds.x || winBounds.y !== displayBounds.y)) {
+    dbg(`  clamping offset dx=${winBounds.x - displayBounds.x} dy=${winBounds.y - displayBounds.y}`)
+  }
   dbg(`  => screenX=${screenX} screenY=${screenY} w=${selW} h=${selH}`)
   dbg(`  displays=${JSON.stringify(screen.getAllDisplays().map(d => ({ id: d.id, bounds: d.bounds, scaleFactor: d.scaleFactor })))}`)
 
