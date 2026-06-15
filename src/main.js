@@ -22,8 +22,8 @@ const gotLock = app.requestSingleInstanceLock()
 if (!gotLock) app.quit()
 
 let tray = null
-let overlayWindow = null
-let overlayBounds = null  // combined bounding rect of all displays
+let overlayWindows = []   // one BrowserWindow per physical display
+let overlayReadyCount = 0
 let annotationWindow = null
 
 const dbg = (...args) => fs.appendFileSync(
@@ -46,40 +46,64 @@ function captureRegion(x, y, w, h) {
   }
 }
 
-function createOverlayWindow() {
+function closeAllOverlays() {
+  const entries = [...overlayWindows]
+  overlayWindows = []
+  overlayReadyCount = 0
+  for (const { win } of entries) {
+    if (!win.isDestroyed()) win.close()
+  }
+}
+
+function createOverlayWindows() {
   const displays = screen.getAllDisplays()
+  overlayWindows = []
+  overlayReadyCount = 0
 
-  // Compute a single rect that covers every display.
-  const minX = Math.min(...displays.map(d => d.bounds.x))
-  const minY = Math.min(...displays.map(d => d.bounds.y))
-  const maxX = Math.max(...displays.map(d => d.bounds.x + d.bounds.width))
-  const maxY = Math.max(...displays.map(d => d.bounds.y + d.bounds.height))
-  overlayBounds = { x: minX, y: minY, width: maxX - minX, height: maxY - minY }
+  dbg(`createOverlayWindows: ${displays.length} display(s)`)
+  displays.forEach((d, i) => dbg(`  display[${i}]: bounds=${JSON.stringify(d.bounds)} scaleFactor=${d.scaleFactor}`))
 
-  overlayWindow = new BrowserWindow({
-    ...overlayBounds,
-    show: false,
-    frame: false,
-    transparent: true,
-    backgroundColor: '#00000000',
-    alwaysOnTop: true,
-    skipTaskbar: true,
-    hasShadow: false,
-    resizable: false,
-    movable: false,
-    focusable: true,
-    webPreferences: {
-      preload: path.join(__dirname, 'preload-overlay.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
-    },
+  displays.forEach((display, i) => {
+    const { x, y, width, height } = display.bounds
+    const win = new BrowserWindow({
+      x, y, width, height,
+      // 'panel' type (NSPanel) has different positioning rules on macOS
+      // and is less likely to be clamped to the primary display.
+      type: 'panel',
+      show: false,
+      frame: false,
+      transparent: true,
+      backgroundColor: '#00000000',
+      alwaysOnTop: true,
+      skipTaskbar: true,
+      hasShadow: false,
+      resizable: false,
+      movable: false,
+      focusable: true,
+      webPreferences: {
+        preload: path.join(__dirname, 'preload-overlay.js'),
+        contextIsolation: true,
+        nodeIntegration: false,
+      },
+    })
+
+    // Log immediately after construction — before show() — to catch constructor-time clamping
+    dbg(`  window[${i}] post-constructor getBounds()=${JSON.stringify(win.getBounds())}`)
+
+    win.setAlwaysOnTop(true, 'screen-saver')
+    win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
+
+    // Force bounds NOW (before show) so macOS has the correct position before compositing starts
+    win.setBounds({ x, y, width, height })
+    dbg(`  window[${i}] pre-show setBounds(target) → getBounds()=${JSON.stringify(win.getBounds())}`)
+
+    // Pass display index so renderer can pick a debug tint color
+    win.loadFile(path.join(__dirname, '../dist/overlay.html'), { query: { displayIndex: i } })
+    win.on('closed', () => { overlayWindows = overlayWindows.filter(o => o.win !== win) })
+
+    // Store display alongside window so overlay-ready handler can re-assert bounds
+    overlayWindows.push({ win, display })
   })
-
-  overlayWindow.setBounds(overlayBounds)
-  overlayWindow.setAlwaysOnTop(true, 'screen-saver')
-  overlayWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
-  overlayWindow.loadFile(path.join(__dirname, '../dist/overlay.html'))
-  overlayWindow.on('closed', () => { overlayWindow = null; overlayBounds = null })
 }
 
 function createAnnotationWindow(croppedDataUrl) {
@@ -151,9 +175,9 @@ async function ensureScreenPermission() {
 }
 
 function triggerScreenshot() {
-  if (overlayWindow) { overlayWindow.close(); return }
+  if (overlayWindows.length > 0) { closeAllOverlays(); return }
   if (annotationWindow) annotationWindow.close()
-  createOverlayWindow()
+  createOverlayWindows()
 }
 
 // Close the tray menu (if open) then wait for its dismiss animation before
@@ -212,42 +236,71 @@ app.on('window-all-closed', () => {
 // ── IPC ──────────────────────────────────────────────────────────────────────
 
 ipcMain.on('overlay-ready', () => {
-  if (!overlayWindow || !overlayBounds) return
-  overlayWindow.show()
-  overlayWindow.setBounds(overlayBounds)
-  // Re-assert after show() — macOS can reset the window level when a window becomes visible.
-  overlayWindow.setAlwaysOnTop(true, 'screen-saver')
-  overlayWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
-  overlayWindow.focus()
+  overlayReadyCount++
+  dbg(`overlay-ready: ${overlayReadyCount}/${overlayWindows.length} windows ready`)
+  if (overlayReadyCount < overlayWindows.length) return
+
+  overlayWindows.forEach(({ win, display }, i) => {
+    const { x, y, width, height } = display.bounds
+    if (win.isDestroyed()) { dbg(`  window[${i}] already destroyed, skipping show()`); return }
+
+    win.show()
+    dbg(`  window[${i}] show() → getBounds()=${JSON.stringify(win.getBounds())}`)
+
+    // Re-assert position after show() — macOS can clamp/reset when the window becomes visible.
+    win.setBounds({ x, y, width, height })
+    win.setPosition(x, y, false)   // false = no animation
+    dbg(`  window[${i}] after setBounds+setPosition(false) → getBounds()=${JSON.stringify(win.getBounds())}`)
+
+    win.setAlwaysOnTop(true, 'screen-saver')
+    win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
+  })
+
+  // Focus the window on whichever display the cursor is currently on
+  const cursorPoint = screen.getCursorScreenPoint()
+  dbg(`  cursor at ${JSON.stringify(cursorPoint)}`)
+  const focusEntry = overlayWindows.find(({ display }) => {
+    const { x, y, width, height } = display.bounds
+    return cursorPoint.x >= x && cursorPoint.x < x + width &&
+           cursorPoint.y >= y && cursorPoint.y < y + height
+  }) || overlayWindows[0]
+  if (focusEntry && !focusEntry.win.isDestroyed()) {
+    focusEntry.win.focus()
+    dbg(`  focused window[${overlayWindows.indexOf(focusEntry)}] bounds=${JSON.stringify(focusEntry.display.bounds)}`)
+  }
 })
 
 ipcMain.on('cancel-selection', () => {
-  if (overlayWindow) overlayWindow.close()
+  closeAllOverlays()
 })
 
-ipcMain.on('selection-complete', (_, { x, y, w, h }) => {
-  if (!overlayWindow || !overlayBounds) return
-  const screenX = overlayBounds.x + Math.round(x)
-  const screenY = overlayBounds.y + Math.round(y)
+ipcMain.on('selection-complete', (event, { x, y, w, h }) => {
+  const senderWin = BrowserWindow.fromWebContents(event.sender)
+  if (!senderWin || senderWin.isDestroyed()) return
+
+  // Use stored display.bounds (not win.getBounds()) so macOS window-position
+  // clamping doesn't corrupt the screenshot coordinates.
+  const entry = overlayWindows.find(o => o.win === senderWin)
+  const originBounds = entry ? entry.display.bounds : senderWin.getBounds()
+  const screenX = originBounds.x + Math.round(x)
+  const screenY = originBounds.y + Math.round(y)
   const selW = Math.round(w)
   const selH = Math.round(h)
-  const actualBounds = overlayWindow.getBounds()
-  dbg(`selection-complete: renderer x=${x} y=${y} w=${w} h=${h}`)
-  dbg(`  overlayBounds=${JSON.stringify(overlayBounds)}`)
-  dbg(`  actualWindowBounds=${JSON.stringify(actualBounds)}`)
-  dbg(`  => screenX=${screenX} screenY=${screenY} w=${selW} h=${selH}`)
-  dbg(`  displays=${JSON.stringify(screen.getAllDisplays().map(d => ({ id: d.id, bounds: d.bounds })))}`)
-  if (actualBounds.y !== overlayBounds.y) {
-    dbg(`  WARNING: window y clamped from ${overlayBounds.y} to ${actualBounds.y} — coordinates will be off by ${actualBounds.y - overlayBounds.y}px`)
-  }
 
-  overlayWindow.once('closed', () => {
-    setTimeout(() => {
-      const dataUrl = captureRegion(screenX, screenY, selW, selH)
-      if (dataUrl) createAnnotationWindow(dataUrl)
-    }, 80)
-  })
-  overlayWindow.close()
+  dbg(`selection-complete: renderer x=${x} y=${y} w=${w} h=${h}`)
+  dbg(`  originBounds (display)=${JSON.stringify(originBounds)} win.getBounds()=${JSON.stringify(senderWin.getBounds())}`)
+  dbg(`  => screenX=${screenX} screenY=${screenY} w=${selW} h=${selH}`)
+  dbg(`  displays=${JSON.stringify(screen.getAllDisplays().map(d => ({ id: d.id, bounds: d.bounds, scaleFactor: d.scaleFactor })))}`)
+
+  closeAllOverlays()
+  setTimeout(() => {
+    const dataUrl = captureRegion(screenX, screenY, selW, selH)
+    if (dataUrl) createAnnotationWindow(dataUrl)
+  }, 80)
+})
+
+ipcMain.on('mouse-debug', (_, data) => {
+  dbg(`mouse-debug: ${JSON.stringify(data)}`)
 })
 
 ipcMain.handle('copy-to-clipboard', (_, dataUrl) => {

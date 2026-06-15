@@ -1,11 +1,16 @@
 import React, { useEffect, useRef, useCallback, useState } from 'react'
 
+const DEBUG_TINTS = ['rgba(255,0,0,0.2)', 'rgba(0,0,255,0.2)', 'rgba(0,255,0,0.2)', 'rgba(255,165,0,0.2)']
+
 export default function OverlayApp() {
   const canvasRef = useRef(null)
   const dprRef = useRef(1)
   const dragging = useRef(false)
   const startPos = useRef(null)
   const [sel, setSel] = useState(null)
+
+  const displayIndex = parseInt(new URLSearchParams(window.location.search).get('displayIndex') || '0', 10)
+  const debugTint = DEBUG_TINTS[displayIndex] ?? 'rgba(255,255,0,0.2)'
 
   const draw = useCallback((selection) => {
     const canvas = canvasRef.current
@@ -50,12 +55,40 @@ export default function OverlayApp() {
     canvas.getContext('2d').scale(dpr, dpr)
 
     window.electronAPI.overlayReady()
+    window.electronAPI.mouseDebug({
+      event: 'init',
+      displayIndex,
+      innerW: window.innerWidth,
+      innerH: window.innerHeight,
+      dpr,
+    })
 
     const onKey = (e) => {
       if (e.key === 'Escape') window.electronAPI.cancelSelection()
     }
+
+    // Throttled raw mousemove to confirm events reach this renderer
+    let lastLog = 0
+    const onRawMove = (e) => {
+      const now = Date.now()
+      if (now - lastLog < 500) return
+      lastLog = now
+      window.electronAPI.mouseDebug({
+        event: 'mousemove',
+        displayIndex,
+        clientX: e.clientX,
+        clientY: e.clientY,
+        screenX: e.screenX,
+        screenY: e.screenY,
+      })
+    }
+
     window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
+    window.addEventListener('mousemove', onRawMove)
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      window.removeEventListener('mousemove', onRawMove)
+    }
   }, [])
 
   useEffect(() => { draw(sel) }, [sel, draw])
@@ -96,7 +129,7 @@ export default function OverlayApp() {
 
   return (
     <div
-      style={{ width: '100%', height: '100%', cursor: 'crosshair' }}
+      style={{ width: '100%', height: '100%', cursor: 'crosshair', background: debugTint }}
       onMouseDown={onMouseDown}
       onMouseMove={onMouseMove}
       onMouseUp={onMouseUp}
