@@ -1,7 +1,5 @@
 import React, { useEffect, useRef, useCallback, useState } from 'react'
 
-const DEBUG_TINTS = ['rgba(255,0,0,0.2)', 'rgba(0,0,255,0.2)', 'rgba(0,255,0,0.2)', 'rgba(255,165,0,0.2)']
-
 export default function OverlayApp() {
   const canvasRef = useRef(null)
   const dprRef = useRef(1)
@@ -10,7 +8,6 @@ export default function OverlayApp() {
   const [sel, setSel] = useState(null)
 
   const displayIndex = parseInt(new URLSearchParams(window.location.search).get('displayIndex') || '0', 10)
-  const debugTint = DEBUG_TINTS[displayIndex] ?? 'rgba(255,255,0,0.2)'
 
   const draw = useCallback((selection) => {
     const canvas = canvasRef.current
@@ -129,7 +126,7 @@ export default function OverlayApp() {
 
   return (
     <div
-      style={{ width: '100%', height: '100%', cursor: 'crosshair', background: debugTint }}
+      style={{ width: '100%', height: '100%', cursor: 'crosshair' }}
       onMouseDown={onMouseDown}
       onMouseMove={onMouseMove}
       onMouseUp={onMouseUp}
