@@ -41,6 +41,7 @@
       "icon": "assets/AppIcon.icns",
       "category": "public.app-category.productivity",
       "hardenedRuntime": true,
+      "minimumSystemVersion": "12.0",
       "identity": "Apple Distribution: HOSEOK CHOI (TN69XZSQRC)",
       "provisioningProfile": "/Users/hostate247/screenshot-tool/assets/RedCap_MAS.provisionprofile",
       "entitlements": "assets/entitlements.mas.plist",

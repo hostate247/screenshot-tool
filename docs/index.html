@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RedCap — Support</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: #0e0e0e;
+      color: #d4d4d4;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+      font-size: 16px;
+      line-height: 1.6;
+    }
+
+    a { color: #e05a5a; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    header {
+      border-bottom: 1px solid #222;
+      padding: 32px 0;
+    }
+
+    .container {
+      max-width: 680px;
+      margin: 0 auto;
+      padding: 0 24px;
+    }
+
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .logo-icon {
+      width: 40px;
+      height: 40px;
+      background: #e05a5a;
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .logo-icon svg {
+      width: 22px;
+      height: 22px;
+      fill: #fff;
+    }
+
+    .logo-text {
+      font-size: 22px;
+      font-weight: 600;
+      color: #f0f0f0;
+      letter-spacing: -0.3px;
+    }
+
+    .hero {
+      padding: 56px 0 40px;
+      border-bottom: 1px solid #1a1a1a;
+    }
+
+    .hero h1 {
+      font-size: 32px;
+      font-weight: 700;
+      color: #f0f0f0;
+      letter-spacing: -0.5px;
+      margin-bottom: 12px;
+    }
+
+    .hero p {
+      font-size: 17px;
+      color: #888;
+      max-width: 520px;
+    }
+
+    section {
+      padding: 40px 0;
+      border-bottom: 1px solid #1a1a1a;
+    }
+
+    section:last-child { border-bottom: none; }
+
+    h2 {
+      font-size: 13px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: #555;
+      margin-bottom: 24px;
+    }
+
+    .faq-item {
+      margin-bottom: 28px;
+    }
+
+    .faq-item:last-child { margin-bottom: 0; }
+
+    .faq-q {
+      font-size: 15px;
+      font-weight: 600;
+      color: #e8e8e8;
+      margin-bottom: 6px;
+    }
+
+    .faq-a {
+      font-size: 15px;
+      color: #888;
+    }
+
+    .badge {
+      display: inline-block;
+      background: #1a1a1a;
+      border: 1px solid #2a2a2a;
+      color: #ccc;
+      font-family: "SF Mono", "Fira Code", monospace;
+      font-size: 13px;
+      padding: 2px 8px;
+      border-radius: 4px;
+    }
+
+    .contact-block {
+      background: #141414;
+      border: 1px solid #222;
+      border-radius: 10px;
+      padding: 24px;
+    }
+
+    .contact-block p {
+      color: #888;
+      font-size: 15px;
+      margin-bottom: 10px;
+    }
+
+    .contact-block a {
+      font-size: 15px;
+      font-weight: 500;
+    }
+
+    footer {
+      padding: 32px 0;
+      color: #3a3a3a;
+      font-size: 13px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    footer a { color: #3a3a3a; }
+    footer a:hover { color: #666; text-decoration: none; }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="container">
+    <div class="logo">
+      <div class="logo-icon">
+        <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+          <path d="M4 6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6zm2 0v12h12V6H6zm2 2h2v2H8V8zm6 0h2v2h-2V8zM8 14h8v2H8v-2z"/>
+        </svg>
+      </div>
+      <span class="logo-text">RedCap</span>
+    </div>
+  </div>
+</header>
+
+<main>
+  <div class="container">
+
+    <div class="hero">
+      <h1>Screenshot Tool for macOS</h1>
+      <p>RedCap is a lightweight screenshot utility that lets you capture any region of your screen — across multiple displays — with a single hotkey.</p>
+    </div>
+
+    <section>
+      <h2>Frequently Asked Questions</h2>
+
+      <div class="faq-item">
+        <div class="faq-q">How do I take a screenshot?</div>
+        <div class="faq-a">Press the global hotkey <span class="badge">⌘⇧1</span> to activate the capture overlay. Click and drag to select the region you want to capture, then release to save the screenshot.</div>
+      </div>
+
+      <div class="faq-item">
+        <div class="faq-q">What is the default hotkey?</div>
+        <div class="faq-a">The default shortcut is <span class="badge">⌘⇧1</span>. The hotkey is active system-wide, even when RedCap is running in the background.</div>
+      </div>
+
+      <div class="faq-item">
+        <div class="faq-q">Where are screenshots saved?</div>
+        <div class="faq-a">Screenshots are saved to your Desktop by default. The file is named with a timestamp, e.g. <span class="badge">screenshot-2026-06-16.png</span>.</div>
+      </div>
+
+      <div class="faq-item">
+        <div class="faq-q">Does RedCap work across multiple displays?</div>
+        <div class="faq-a">Yes. The capture overlay spans all connected displays, so you can select a region across any screen in your setup.</div>
+      </div>
+
+      <div class="faq-item">
+        <div class="faq-q">How do I cancel a capture?</div>
+        <div class="faq-a">Press <span class="badge">Escape</span> at any time while the overlay is active to dismiss it without taking a screenshot.</div>
+      </div>
+
+      <div class="faq-item">
+        <div class="faq-q">Does RedCap run at login?</div>
+        <div class="faq-a">You can enable or disable "Launch at Login" from the menu bar icon. When enabled, RedCap starts automatically and stays ready in the background.</div>
+      </div>
+
+      <div class="faq-item">
+        <div class="faq-q">Is any data collected or uploaded?</div>
+        <div class="faq-a">No. RedCap processes everything locally on your device. No screenshots, metadata, or usage data is ever sent anywhere. See our <a href="privacy.html">Privacy Policy</a> for details.</div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Contact</h2>
+      <div class="contact-block">
+        <p>Have a question, found a bug, or want to give feedback? Send an email and I'll get back to you.</p>
+        <a href="mailto:choihs9608@gmail.com">choihs9608@gmail.com</a>
+      </div>
+    </section>
+
+  </div>
+</main>
+
+<div class="container">
+  <footer>
+    <span>&copy; 2026 RedCap</span>
+    <a href="privacy.html">Privacy Policy</a>
+  </footer>
+</div>
+
+</body>
+</html>
