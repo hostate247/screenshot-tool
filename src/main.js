@@ -14,7 +14,6 @@ const {
   Menu,
 } = require('electron')
 const path = require('path')
-const { execSync } = require('child_process')
 const fs = require('fs')
 const os = require('os')
 
@@ -25,25 +24,46 @@ let tray = null
 let overlayWindows = []   // one BrowserWindow per physical display
 let overlayReadyCount = 0
 let annotationWindow = null
+let capturePromise = Promise.resolve(new Map())  // resolves to Map<displayId, { dataUrl, scaleFactor, bounds }>
 
 const dbg = (...args) => fs.appendFileSync(
   path.join(os.homedir(), 'Desktop', 'redcap-debug.log'),
   `${new Date().toISOString()} ${args.join(' ')}\n`
 )
 
-function captureRegion(x, y, w, h) {
-  const tmpPath = path.join(os.tmpdir(), `sc-${Date.now()}.png`)
-  const cmd = `screencapture -x -t png -R ${x},${y},${w},${h} "${tmpPath}"`
-  dbg(`captureRegion cmd: ${cmd}`)
-  try {
-    execSync(cmd)
-    const data = fs.readFileSync(tmpPath)
-    fs.unlinkSync(tmpPath)
-    return `data:image/png;base64,${data.toString('base64')}`
-  } catch (err) {
-    dbg(`captureRegion ERROR: ${err.message}`)
-    return null
+async function captureAllDisplays() {
+  const displays = screen.getAllDisplays()
+
+  // Match thumbnailSize to the largest native resolution so every display
+  // is captured at full quality without upscaling.
+  const maxW = Math.max(...displays.map(d => Math.ceil(d.bounds.width * d.scaleFactor)))
+  const maxH = Math.max(...displays.map(d => Math.ceil(d.bounds.height * d.scaleFactor)))
+
+  const sources = await desktopCapturer.getSources({
+    types: ['screen'],
+    thumbnailSize: { width: maxW, height: maxH },
+  })
+
+  const map = new Map()
+  for (let idx = 0; idx < sources.length; idx++) {
+    const source = sources[idx]
+    // Match by display_id (macOS); fall back to positional index
+    const display = displays.find(d => String(d.id) === source.display_id) || displays[idx]
+    if (!display) continue
+
+    // Keep the NativeImage directly — calling toDataURL() on a full-screen Retina
+    // image (e.g. 5120×2880) can take 2–4 seconds of main-thread PNG encoding.
+    // We only encode the small cropped region later.
+    const { width: thumbW, height: thumbH } = source.thumbnail.getSize()
+    map.set(display.id, {
+      nativeImg: source.thumbnail,
+      thumbW,
+      thumbH,
+      bounds: display.bounds,
+    })
+    dbg(`captureAllDisplays: display[${idx}] id=${display.id} bounds=${display.bounds.width}x${display.bounds.height} thumb=${thumbW}x${thumbH}`)
   }
+  return map
 }
 
 function closeAllOverlays() {
@@ -174,9 +194,17 @@ async function ensureScreenPermission() {
   return false
 }
 
-function triggerScreenshot() {
+async function triggerScreenshot() {
   if (overlayWindows.length > 0) { closeAllOverlays(); return }
   if (annotationWindow) annotationWindow.close()
+
+  // Fire capture immediately as a background promise so the overlay appears without delay.
+  // Capture completes well before the user finishes dragging a selection (~200-500ms vs ~1s+).
+  capturePromise = captureAllDisplays().catch(err => {
+    dbg(`captureAllDisplays ERROR: ${err.message}`)
+    return new Map()
+  })
+
   createOverlayWindows()
 }
 
@@ -274,34 +302,62 @@ ipcMain.on('cancel-selection', () => {
   closeAllOverlays()
 })
 
-ipcMain.on('selection-complete', (event, { x, y, w, h }) => {
+ipcMain.on('selection-complete', async (event, { x, y, w, h }) => {
   const senderWin = BrowserWindow.fromWebContents(event.sender)
   if (!senderWin || senderWin.isDestroyed()) return
 
-  // Use win.getBounds() — clientX/Y in the renderer are relative to where the window
-  // actually is, which may differ from display.bounds if macOS clamped the position
-  // (e.g. 30px down for the menu bar on the primary display).
   const entry = overlayWindows.find(o => o.win === senderWin)
   const winBounds = senderWin.getBounds()
-  const screenX = winBounds.x + Math.round(x)
-  const screenY = winBounds.y + Math.round(y)
-  const selW = Math.round(w)
-  const selH = Math.round(h)
+  const displayBounds = entry ? entry.display.bounds : winBounds
 
-  const displayBounds = entry ? entry.display.bounds : null
   dbg(`selection-complete: renderer x=${x} y=${y} w=${w} h=${h}`)
   dbg(`  win.getBounds()=${JSON.stringify(winBounds)} display.bounds=${JSON.stringify(displayBounds)}`)
-  if (displayBounds && (winBounds.x !== displayBounds.x || winBounds.y !== displayBounds.y)) {
-    dbg(`  clamping offset dx=${winBounds.x - displayBounds.x} dy=${winBounds.y - displayBounds.y}`)
-  }
-  dbg(`  => screenX=${screenX} screenY=${screenY} w=${selW} h=${selH}`)
-  dbg(`  displays=${JSON.stringify(screen.getAllDisplays().map(d => ({ id: d.id, bounds: d.bounds, scaleFactor: d.scaleFactor })))}`)
 
   closeAllOverlays()
-  setTimeout(() => {
-    const dataUrl = captureRegion(screenX, screenY, selW, selH)
-    if (dataUrl) createAnnotationWindow(dataUrl)
-  }, 80)
+
+  // Await the capture that was started when the hotkey fired
+  const capturedImages = await capturePromise
+  capturePromise = Promise.resolve(new Map())
+
+  const displayId = entry?.display.id
+  const captured = capturedImages.get(displayId)
+
+  if (!captured) {
+    dbg('selection-complete: no captured image for display, aborting')
+    return
+  }
+
+  const { nativeImg, thumbW, thumbH, bounds } = captured
+
+  // Account for macOS window-position clamping (e.g. menu bar on primary display)
+  const offsetX = winBounds.x - bounds.x
+  const offsetY = winBounds.y - bounds.y
+
+  // nativeImage.getSize() returns logical (DIP) pixels; derive the pixel ratio from
+  // actual thumbnail dimensions vs display logical bounds — correct for any scale factor.
+  const xRatio = thumbW / bounds.width
+  const yRatio = thumbH / bounds.height
+
+  const cropX = Math.round((offsetX + x) * xRatio)
+  const cropY = Math.round((offsetY + y) * yRatio)
+  const cropW = Math.round(w * xRatio)
+  const cropH = Math.round(h * yRatio)
+
+  dbg(`  offsetX=${offsetX} offsetY=${offsetY} thumbRatio=${xRatio.toFixed(3)}x${yRatio.toFixed(3)}`)
+  dbg(`  crop: x=${cropX} y=${cropY} w=${cropW} h=${cropH}`)
+
+  try {
+    const safeX = Math.max(0, Math.min(cropX, thumbW - 1))
+    const safeY = Math.max(0, Math.min(cropY, thumbH - 1))
+    const safeW = Math.min(cropW, thumbW - safeX)
+    const safeH = Math.min(cropH, thumbH - safeY)
+
+    // Crop the NativeImage directly — then toDataURL() only encodes the small region.
+    const cropped = nativeImg.crop({ x: safeX, y: safeY, width: safeW, height: safeH })
+    createAnnotationWindow(cropped.toDataURL())
+  } catch (err) {
+    dbg(`selection-complete crop ERROR: ${err.message}`)
+  }
 })
 
 ipcMain.on('mouse-debug', (_, data) => {

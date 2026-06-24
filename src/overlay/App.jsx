@@ -1,47 +1,52 @@
-import React, { useEffect, useRef, useCallback, useState } from 'react'
+import React, { useEffect, useRef } from 'react'
 
 export default function OverlayApp() {
   const canvasRef = useRef(null)
   const dprRef = useRef(1)
   const dragging = useRef(false)
   const startPos = useRef(null)
-  const [sel, setSel] = useState(null)
+  const selRef = useRef(null)
+  const rafRef = useRef(null)
 
   const displayIndex = parseInt(new URLSearchParams(window.location.search).get('displayIndex') || '0', 10)
 
-  const draw = useCallback((selection) => {
+  function draw() {
     const canvas = canvasRef.current
     if (!canvas) return
     const ctx = canvas.getContext('2d')
-    const W = canvas.width / dprRef.current
-    const H = canvas.height / dprRef.current
+    const dpr = dprRef.current
+    const W = canvas.width / dpr
+    const H = canvas.height / dpr
 
     ctx.clearRect(0, 0, W, H)
 
-    if (selection && selection.w > 0 && selection.h > 0) {
-      const { x, y, w, h } = selection
+    const s = selRef.current
+    if (s && s.w > 2 && s.h > 2) {
+      const { x, y, w, h } = s
 
-      // Dim everything outside the selection
       ctx.fillStyle = 'rgba(0, 0, 0, 0.4)'
-      ctx.fillRect(0, 0, W, y)                  // top
-      ctx.fillRect(0, y, x, h)                  // left
-      ctx.fillRect(x + w, y, W - x - w, h)      // right
-      ctx.fillRect(0, y + h, W, H - y - h)      // bottom
+      ctx.fillRect(0, 0, W, y)
+      ctx.fillRect(0, y, x, h)
+      ctx.fillRect(x + w, y, W - x - w, h)
+      ctx.fillRect(0, y + h, W, H - y - h)
 
-      // Selection border
       ctx.strokeStyle = 'rgba(255, 255, 255, 0.9)'
       ctx.lineWidth = 1.5
       ctx.setLineDash([])
       ctx.strokeRect(x, y, w, h)
 
-      // Size label
-      const label = `${Math.round(w)} × ${Math.round(h)}`
       ctx.font = '11px -apple-system, BlinkMacSystemFont, sans-serif'
       ctx.fillStyle = 'rgba(255, 255, 255, 0.85)'
+      const label = `${Math.round(w)} × ${Math.round(h)}`
       const labelY = y > 20 ? y - 6 : y + h + 14
       ctx.fillText(label, x + 4, labelY)
     }
-  }, [])
+  }
+
+  function scheduleDraw() {
+    if (rafRef.current) cancelAnimationFrame(rafRef.current)
+    rafRef.current = requestAnimationFrame(draw)
+  }
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -64,7 +69,6 @@ export default function OverlayApp() {
       if (e.key === 'Escape') window.electronAPI.cancelSelection()
     }
 
-    // Throttled raw mousemove to confirm events reach this renderer
     let lastLog = 0
     const onRawMove = (e) => {
       const now = Date.now()
@@ -88,40 +92,36 @@ export default function OverlayApp() {
     }
   }, [])
 
-  useEffect(() => { draw(sel) }, [sel, draw])
-
-  const getPos = (e) => ({ x: e.clientX, y: e.clientY })
-
   const onMouseDown = (e) => {
     if (e.button !== 0) return
     dragging.current = true
-    startPos.current = getPos(e)
-    setSel(null)
+    startPos.current = { x: e.clientX, y: e.clientY }
+    selRef.current = null
+    scheduleDraw()
   }
 
   const onMouseMove = (e) => {
     if (!dragging.current || !startPos.current) return
-    const cur = getPos(e)
-    setSel({
-      x: Math.min(startPos.current.x, cur.x),
-      y: Math.min(startPos.current.y, cur.y),
-      w: Math.abs(cur.x - startPos.current.x),
-      h: Math.abs(cur.y - startPos.current.y),
-    })
+    const { x: sx, y: sy } = startPos.current
+    selRef.current = {
+      x: Math.min(sx, e.clientX),
+      y: Math.min(sy, e.clientY),
+      w: Math.abs(e.clientX - sx),
+      h: Math.abs(e.clientY - sy),
+    }
+    scheduleDraw()
   }
 
   const onMouseUp = (e) => {
     if (!dragging.current) return
     dragging.current = false
-    const cur = getPos(e)
-    const x = Math.min(startPos.current.x, cur.x)
-    const y = Math.min(startPos.current.y, cur.y)
-    const w = Math.abs(cur.x - startPos.current.x)
-    const h = Math.abs(cur.y - startPos.current.y)
-
-    if (w < 4 || h < 4) { setSel(null); return }
-
-    window.electronAPI.selectionComplete({ x, y, w, h })
+    const s = selRef.current
+    if (!s || s.w < 4 || s.h < 4) {
+      selRef.current = null
+      scheduleDraw()
+      return
+    }
+    window.electronAPI.selectionComplete(s)
   }
 
   return (
