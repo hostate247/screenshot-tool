@@ -26,35 +26,67 @@ let overlayReadyCount = 0
 let annotationWindow = null
 let capturePromise = Promise.resolve(new Map())  // resolves to Map<displayId, { dataUrl, scaleFactor, bounds }>
 
-const dbg = (...args) => fs.appendFileSync(
-  path.join(os.homedir(), 'Desktop', 'redcap-debug.log'),
-  `${new Date().toISOString()} ${args.join(' ')}\n`
-)
+// Debug logging is OFF by default. Enable with REDCAP_DEBUG=1.
+// Never write to ~/Desktop — that path is denied under the App Sandbox (EPERM)
+// and would crash the capture flow. app.getPath('logs') is always inside the
+// app container and writable. Wrapped in try/catch so logging can never throw.
+const DEBUG = process.env.REDCAP_DEBUG === '1' || process.env.REDCAP_DEBUG === 'true'
+const dbg = (...args) => {
+  if (!DEBUG) return
+  try {
+    const logPath = path.join(app.getPath('logs'), 'redcap-debug.log')
+    fs.appendFileSync(logPath, `${new Date().toISOString()} ${args.join(' ')}\n`)
+  } catch {
+    // logging must never break the app
+  }
+}
 
 async function captureAllDisplays() {
   const displays = screen.getAllDisplays()
+  dbg(`captureAllDisplays: ${displays.length} display(s)`)
 
   // Match thumbnailSize to the largest native resolution so every display
   // is captured at full quality without upscaling.
   const maxW = Math.max(...displays.map(d => Math.ceil(d.bounds.width * d.scaleFactor)))
   const maxH = Math.max(...displays.map(d => Math.ceil(d.bounds.height * d.scaleFactor)))
+  dbg(`captureAllDisplays: requesting thumbnailSize=${maxW}x${maxH}`)
 
-  const sources = await desktopCapturer.getSources({
-    types: ['screen'],
-    thumbnailSize: { width: maxW, height: maxH },
-  })
+  let sources
+  try {
+    sources = await desktopCapturer.getSources({
+      types: ['screen'],
+      thumbnailSize: { width: maxW, height: maxH },
+    })
+    dbg(`captureAllDisplays: getSources returned ${sources.length} source(s)`)
+  } catch (err) {
+    dbg(`captureAllDisplays: getSources threw: ${err.message}\n${err.stack}`)
+    throw err
+  }
+
+  if (sources.length === 0) {
+    dbg('captureAllDisplays: no sources returned — Screen Recording permission likely not granted')
+    const err = new Error('No screen sources available. Screen Recording permission may not be granted.')
+    err.code = 'NO_SOURCES'
+    throw err
+  }
 
   const map = new Map()
+  let usableCount = 0
   for (let idx = 0; idx < sources.length; idx++) {
     const source = sources[idx]
     // Match by display_id (macOS); fall back to positional index
     const display = displays.find(d => String(d.id) === source.display_id) || displays[idx]
-    if (!display) continue
+    if (!display) { dbg(`captureAllDisplays: source[${idx}] has no matching display, skipping`); continue }
 
     // Keep the NativeImage directly — calling toDataURL() on a full-screen Retina
     // image (e.g. 5120×2880) can take 2–4 seconds of main-thread PNG encoding.
     // We only encode the small cropped region later.
     const { width: thumbW, height: thumbH } = source.thumbnail.getSize()
+    if (thumbW <= 1 || thumbH <= 1) {
+      dbg(`captureAllDisplays: source[${idx}] thumbnail is ${thumbW}x${thumbH} — permission likely denied, skipping`)
+      continue
+    }
+    usableCount++
     map.set(display.id, {
       nativeImg: source.thumbnail,
       thumbW,
@@ -62,6 +94,15 @@ async function captureAllDisplays() {
       bounds: display.bounds,
     })
     dbg(`captureAllDisplays: display[${idx}] id=${display.id} bounds=${display.bounds.width}x${display.bounds.height} thumb=${thumbW}x${thumbH}`)
+  }
+
+  // Every thumbnail was degenerate — Screen Recording was almost certainly denied.
+  // Treat as a hard failure so the caller shows the permission prompt instead of
+  // letting the user select a region that crops to a black image.
+  if (usableCount === 0) {
+    const err = new Error('Screen capture returned no usable image. Screen Recording permission may not be granted.')
+    err.code = 'NO_SOURCES'
+    throw err
   }
   return map
 }
@@ -164,17 +205,37 @@ function createAnnotationWindow(croppedDataUrl) {
 
 // ── Screen recording permission ───────────────────────────────────────────────
 
+function showPermissionDialog() {
+  dbg('showPermissionDialog: prompting user to grant Screen Recording permission')
+  dialog.showMessageBox({
+    type: 'warning',
+    buttons: ['Open System Settings', 'Cancel'],
+    defaultId: 0,
+    cancelId: 1,
+    title: 'Screen Recording Permission Required',
+    message: 'Screenshot Tool needs Screen Recording access.',
+    detail: 'Grant permission in System Settings → Privacy & Security → Screen Recording, then try again.',
+  }).then(({ response }) => {
+    if (response === 0) {
+      shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture')
+    }
+  })
+}
+
 async function ensureScreenPermission() {
   if (process.platform !== 'darwin') return true
 
   const status = systemPreferences.getMediaAccessStatus('screen')
+  dbg(`ensureScreenPermission: status=${status}`)
   if (status === 'granted') return true
 
   if (status === 'not-determined') {
     try {
       await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 1, height: 1 } })
     } catch {}
-    if (systemPreferences.getMediaAccessStatus('screen') === 'granted') return true
+    const newStatus = systemPreferences.getMediaAccessStatus('screen')
+    dbg(`ensureScreenPermission: after probe, status=${newStatus}`)
+    if (newStatus === 'granted') return true
   }
 
   const { response } = await dialog.showMessageBox({
@@ -198,10 +259,37 @@ async function triggerScreenshot() {
   if (overlayWindows.length > 0) { closeAllOverlays(); return }
   if (annotationWindow) annotationWindow.close()
 
+  // Short-circuit when Screen Recording is clearly denied. On macOS a denied
+  // permission makes desktopCapturer return a black/1×1 thumbnail rather than
+  // throwing, so without this check we'd show an overlay and crop a black image.
+  if (process.platform === 'darwin') {
+    const status = systemPreferences.getMediaAccessStatus('screen')
+    dbg(`triggerScreenshot: screen permission status=${status}`)
+    if (status === 'denied' || status === 'restricted') {
+      showPermissionDialog()
+      return
+    }
+  }
+
   // Fire capture immediately as a background promise so the overlay appears without delay.
   // Capture completes well before the user finishes dragging a selection (~200-500ms vs ~1s+).
   capturePromise = captureAllDisplays().catch(err => {
-    dbg(`captureAllDisplays ERROR: ${err.message}`)
+    dbg(`captureAllDisplays ERROR: code=${err.code || 'none'} message=${err.message}\n${err.stack}`)
+    closeAllOverlays()
+    const permStatus = process.platform === 'darwin'
+      ? systemPreferences.getMediaAccessStatus('screen')
+      : 'granted'
+    if (err.code === 'NO_SOURCES' || permStatus !== 'granted') {
+      showPermissionDialog()
+    } else {
+      dialog.showMessageBox({
+        type: 'error',
+        title: 'Capture Failed',
+        message: 'Failed to capture the screen.',
+        detail: err.message,
+        buttons: ['OK'],
+      })
+    }
     return new Map()
   })
 
@@ -236,9 +324,6 @@ app.whenReady().then(async () => {
   // Menu-bar-only app: hide dock icon. The app won't appear in ⌘Tab — that is
   // expected macOS behavior for LSUIElement-style apps.
   if (process.platform === 'darwin') app.dock.hide()
-
-  const allowed = await ensureScreenPermission()
-  if (!allowed) return
 
   // ── Menu bar tray ──────────────────────────────────────────────────────────
   // Not a template image — the red rectangle must render in its actual color.
@@ -323,7 +408,20 @@ ipcMain.on('selection-complete', async (event, { x, y, w, h }) => {
   const captured = capturedImages.get(displayId)
 
   if (!captured) {
-    dbg('selection-complete: no captured image for display, aborting')
+    dbg(`selection-complete: no captured image for displayId=${displayId}, map keys=[${[...capturedImages.keys()].join(',')}]`)
+    dialog.showMessageBox({
+      type: 'error',
+      title: 'Capture Failed',
+      message: 'The screenshot could not be captured.',
+      detail: 'Screen Recording permission may not be granted. Check System Settings → Privacy & Security → Screen Recording.',
+      buttons: ['Open System Settings', 'OK'],
+      defaultId: 0,
+      cancelId: 1,
+    }).then(({ response }) => {
+      if (response === 0) {
+        shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture')
+      }
+    })
     return
   }
 
@@ -377,10 +475,22 @@ ipcMain.handle('save-image', async (_, dataUrl) => {
   })
 
   if (!result.canceled && result.filePath) {
-    const b64 = dataUrl.replace(/^data:image\/\w+;base64,/, '')
-    fs.writeFileSync(result.filePath, Buffer.from(b64, 'base64'))
-    return { success: true }
+    try {
+      const b64 = dataUrl.replace(/^data:image\/\w+;base64,/, '')
+      fs.writeFileSync(result.filePath, Buffer.from(b64, 'base64'))
+      return { success: true }
+    } catch (err) {
+      dbg(`save-image write ERROR: ${err.message}`)
+      dialog.showMessageBox(annotationWindow, {
+        type: 'error',
+        title: 'Save Failed',
+        message: 'Could not save the screenshot.',
+        detail: err.message,
+        buttons: ['OK'],
+      })
+      return { success: false, error: err.message }
+    }
   }
 
-  return { success: false }
+  return { success: false, canceled: true }
 })

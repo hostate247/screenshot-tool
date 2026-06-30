@@ -1,6 +1,6 @@
 {
   "name": "screenshot-tool",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "productName": "RedCap",
   "description": "macOS screenshot annotation tool",
   "main": "src/main.js",
@@ -8,7 +8,7 @@
     "build": "vite build",
     "start": "electron .",
     "dev": "npm run build && electron .",
-    "dist": "npm run build && CSC_NAME=\"Apple Distribution: HOSEOK CHOI (TN69XZSQRC)\" electron-builder --mac"
+    "dist": "npm run build && CSC_NAME=\"HOSEOK CHOI (TN69XZSQRC)\" electron-builder --mac"
   },
   "dependencies": {},
   "devDependencies": {
@@ -23,6 +23,7 @@
   "build": {
     "appId": "com.redcap.screenshot-tool",
     "productName": "RedCap",
+    "buildVersion": "1.0.2",
     "asar": true,
     "files": [
       "src/main.js",
@@ -47,11 +48,11 @@
       "entitlements": "assets/entitlements.mas.plist",
       "entitlementsInherit": "assets/entitlements.mas.inherit.plist",
       "target": [
-        { "target": "mas", "arch": ["arm64", "x64"] }
+        { "target": "mas", "arch": ["universal"] }
       ]
     },
     "mas": {
-      "identity": "Apple Distribution: HOSEOK CHOI (TN69XZSQRC)",
+      "identity": "HOSEOK CHOI (TN69XZSQRC)",
       "provisioningProfile": "/Users/hostate247/screenshot-tool/assets/RedCap_MAS.provisionprofile"
     },
     "pkg": {

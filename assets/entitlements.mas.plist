@@ -17,5 +17,10 @@
     <!-- Required for Electron's DYLD usage -->
     <key>com.apple.security.cs.allow-dyld-environment-variables</key>
     <true/>
+    <!-- Required so the Save panel (powerbox) can grant write access to the
+         file the user picks. Without this, fs.writeFileSync to the chosen path
+         is denied (EPERM) and "Save" silently fails under the sandbox. -->
+    <key>com.apple.security.files.user-selected.read-write</key>
+    <true/>
 </dict>
 </plist>
